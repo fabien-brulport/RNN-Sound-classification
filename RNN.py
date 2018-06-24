@@ -6,6 +6,7 @@ import pickle
 from sklearn.preprocessing import OneHotEncoder, LabelEncoder
 import numpy as np
 import time
+import pandas as pd
 
 
 class RNN:
@@ -17,10 +18,10 @@ class RNN:
         self.batch_size = 128
         self.chunk_size = 20
         self.n_chunks = 41
-        self.rnn_sizes = [128, 64]
-        self.load = False
+        self.rnn_sizes = [128, 128]
+        self.load = True
         self.export_dir = './networks/'
-        self.model_name = 'multiple'
+        self.model_name = 'multipledrop'
 
     def train(self):
         with open('./input/mfcc.p', 'rb') as fp:
@@ -35,6 +36,7 @@ class RNN:
         self.n_classes = tr_labels.shape[1]
 
         # Shuffle the train set
+        np.random.seed(0)
         idx = np.random.permutation(len(tr_labels))
         tr_labels = tr_labels[idx]
         tr_features = tr_features[idx]
@@ -107,7 +109,7 @@ class RNN:
                             3))
                 print('Epoch time: {}'.format(time.time() - t0))
 
-            saver.save(session, self.export_dir + self.model_name)
+            saver.save(session, self.export_dir + self.model_name + 'drop')
 
     def build_rnn(self, x, keep_prob):
         layer = {
@@ -129,7 +131,67 @@ class RNN:
             tf.tensordot(output, layer['weight'], [[1], [0]]) + layer[
                 'bias'])
 
+    def predict(self):
+        with open('./input/mfcc_test.p', 'rb') as fp:
+            ts_features = pickle.load(fp)
+
+        with open('./input/mfcc_labels.p', 'rb') as fp:
+            tr_labels = pickle.load(fp)
+
+        with open('./input/mfcc_test_name.p', 'rb') as fp:
+            fname = pickle.load(fp)
+
+        # Encode string label to int
+        enc = LabelEncoder()
+        tr_labels = enc.fit_transform(tr_labels)
+        self.n_classes = len(enc.classes_)
+
+        # RNN
+        tf.reset_default_graph()
+
+        x = tf.placeholder("float", [None, self.n_chunks, self.chunk_size])
+        y = tf.placeholder("float", [None, self.n_classes])
+        keep_prob = tf.placeholder("float", name='keep_prob')
+
+        prediction = self.build_rnn(x, keep_prob)
+        pred = tf.argmax(prediction, 1)
+
+        # Initializing the variables
+        init = tf.global_variables_initializer()
+        with tf.Session() as session:
+            saver = tf.train.Saver()
+            saver.restore(session, self.export_dir + self.model_name)
+
+            results = {'label': [], 'fname': []}
+            for i, sound in enumerate(ts_features):
+                if len(sound) == 0:
+                    sound = np.zeros((1, self.n_chunks, self.chunk_size))
+                predictions = session.run(prediction,
+                                          feed_dict={x: np.array(sound),
+                                                     keep_prob: 1})
+
+                n_classe = 0
+                threshold = 1
+                while n_classe < 3:
+                    top_labels = np.argsort(predictions, axis=1)[:,
+                                 -threshold:].reshape(-1)
+                    labels, counts = np.unique(top_labels, return_counts=True)
+                    n_classe = len(labels)
+                    threshold += 1
+
+                top3_labels = labels[np.argsort(counts)[-3:]]
+                top3_labels = " ".join(
+                    [enc.inverse_transform(el) for el in top3_labels])
+                results['label'].append(top3_labels)
+                results['fname'].append(fname[i])
+
+                print('Label for {}: {}'.format(i, top3_labels))
+
+        df = pd.DataFrame(results)
+        print(df.head())
+        df.to_csv("output/{}.csv".format(self.model_name), index=False)
+
 
 if __name__ == '__main__':
     rnn = RNN()
-    rnn.train()
+    rnn.predict()
