@@ -1,0 +1,16 @@
+#Pycharm
+.idea/
+
+
+# Notebooks
+.ipynb_checkpoints/*
+
+# Python
+__init__.py
+__pycache__/*
+
+# Model, data
+input/
+model/
+output/
+networks/
