@@ -1,7 +1,7 @@
 import tensorflow as tf
 from tensorflow.python.ops import rnn, rnn_cell
 import pickle
-from sklearn.preprocessing import OneHotEncoder, LabelEncoder
+from sklearn.preprocessing import OneHotEncoder, LabelEncoder, scale
 import numpy as np
 import time
 import pandas as pd
@@ -14,19 +14,23 @@ import matplotlib.pyplot as plt
 
 class RNN:
     def __init__(self):
-        self.learning_rate = 0.0001
-        self.display_step = 5
-        self.hm_epochs = 4000
+        self.learning_rate = 0.001
+        self.display_step = 50
+        self.test_step = 200
+        self.hm_epochs = 1000
         self.n_classes = None
-        self.batch_size = 128
-        self.chunk_size = 2
+        self.batch_size = 64
+        self.chunk_size = 20
         # self.n_chunks = 41
         self.rnn_sizes = [128, 128]
-        self.max_length = 512*41
-        self.load = False
+        self.audio_length = 2
+        self.sampling_rate = 44100
+        # self.max_length = 50
+        self.load = True
         self.export_dir = './networks/'
         self.import_dir = './input/'
-        self.model_name = 'sound'
+        self.model_name = 'mfcc_new_drop'
+        self.load_model_name = 'mfcc_new_drop'
         self.label_file = 'train.csv'
         self.init_encoders()
 
@@ -43,58 +47,109 @@ class RNN:
         self.enc_hot = OneHotEncoder()
         self.enc_hot.fit(self.enc.transform(df.label).reshape(-1, 1))
 
-    def get_bounds(self, sound):
-        start = 0
-        length = len(sound)
-        while start + self.max_length / 2 < length:
-            yield start, min(start + self.max_length, length)
-            start += self.max_length
+    def extract_mfcc(self, train=True):
+        step = 512
+        n_step = self.audio_length * self.sampling_rate // step
 
-    @staticmethod
-    def normalize(sound):
-        return (sound - np.mean(sound)) / np.std(sound)
+        if train:
+            df = pd.read_csv(self.import_dir + self.label_file)
+            df = df.set_index('fname')
+            labels = []
+            verifieds = []
+            path = 'audio_train/'
+        else:
+            path = 'audio_test/'
+        mfccs = []
+        fnames = []
+        count = 0
 
-    def batch_generator(self):
-        df = pd.read_csv(self.import_dir + self.label_file)
-        df = df.set_index('fname')
-        rep = 4
-        batch = np.zeros(
-            (self.batch_size * rep, self.max_length, self.chunk_size))
-        labels = []
-        i = 0
-        while True:
-            for fn in glob.glob(
-                    os.path.join(self.import_dir + 'audio_train/', '*.wav')):
+        for fn in glob.glob(
+                os.path.join(self.import_dir + path, '*.wav')):
+            fname = fn.split('/')[-1]
+            if train:
+                label = df.loc[fname].label
+                verified = df.loc[fname].manually_verified
+            sound_clip, s = librosa.load(fn, sr=self.sampling_rate)
 
-                label = df.loc[fn[-12:]].label
-                sound_clip, s = librosa.load(fn)
-                sound_clip = self.normalize(sound_clip)
-                for start, end in self.get_bounds(sound_clip):
-                    batch[i, :end - start, 0] = sound_clip[start:end]
-                    batch[i, :end - start, 1] = np.abs(np.fft.fft(
-                        sound_clip[start:end], norm='ortho'))
+            try:
+                mfcc = librosa.feature.mfcc(y=sound_clip, sr=s,
+                                            n_mfcc=self.chunk_size).T
+            except ValueError:
+                mfcc = np.ones((10, self.chunk_size))
+                print("!!!!!!!!!!!")
+            time, _ = mfcc.shape
+            mfcc = scale(mfcc, axis=1)
+
+            pad = n_step - time % n_step
+            if pad < n_step // 3 or time // n_step == 0:
+                mfcc = np.pad(mfcc, ((0, pad), (0, 0)), mode='constant',
+                              constant_values=(0, 0))
+                mfcc = mfcc.reshape(time // n_step + 1, n_step, self.chunk_size)
+
+            else:
+                mfcc = mfcc[:time // n_step * n_step, :]
+                mfcc = mfcc.reshape(time // n_step, n_step,
+                                    self.chunk_size)
+            for i in range(mfcc.shape[0]):
+                mfccs.append(mfcc[i, :, :])
+                fnames.append(fname)
+                if train:
                     labels.append(label)
-                    i += 1
-                    if i == self.batch_size * rep:
-                        idx = np.random.permutation(self.batch_size * rep)
-                        l = self.enc_hot.transform(
-                            self.enc.transform(labels).reshape(-1, 1)).toarray()
-                        for _ in range(rep):
-                            s = _ * self.batch_size
-                            e = s + self.batch_size
-                            yield batch[idx[s:e]], l[idx[s:e]]
-                        i = 0
-                        batch = np.zeros(
-                            (self.batch_size * rep, self.max_length,
-                             self.chunk_size))
-                        labels = []
+                    verifieds.append(verified)
+
+            count += 1
+            if count % 100 == 0:
+                print("file {}".format(count))
+                print(len(mfccs))
+                print(len(fnames))
+                if train:
+                    print(len(labels))
+                    print(len(verifieds))
+
+        if train:
+            df_mfcc = pd.DataFrame({
+                'fname': fnames,
+                'label': labels,
+                'verified': verifieds,
+            })
+            df_mfcc.to_csv(self.import_dir + 'mfcc_train.csv')
+            with open('./input/mfcc_train.p', 'wb') as fp:
+                pickle.dump(np.array(mfccs), fp)
+        else:
+            df_mfcc = pd.DataFrame({
+                'fname': fnames,
+            })
+            df_mfcc.to_csv(self.import_dir + 'mfcc_test.csv')
+            with open('./input/mfcc_test.p', 'wb') as fp:
+                pickle.dump(np.array(mfccs), fp)
 
     def train(self):
+        step = 512
+        n_step = self.audio_length * self.sampling_rate // step
+
+        with open('./input/mfcc_train.p', 'rb') as fp:
+            X = pickle.load(fp)
+
+        df_mfcc = pd.read_csv(self.import_dir + 'mfcc_train.csv')
+        y = self.enc_hot.transform(
+            self.enc.transform(df_mfcc.label).reshape(-1, 1)).toarray()
+
+        np.random.seed(0)
+        idx = np.random.permutation(len(y))
+        X = X[idx, :, :]
+        y = y[idx]
+
+        sep = int(len(y) * 0.9)
+        X_train = X[:sep, :, :]
+        X_test = X[sep:, :, :]
+
+        y_train = y[:sep]
+        y_test = y[sep:]
 
         # RNN
         tf.reset_default_graph()
 
-        x = tf.placeholder("float", [None, self.max_length, self.chunk_size])
+        x = tf.placeholder("float", [None, n_step, self.chunk_size])
         y = tf.placeholder("float", [None, self.n_classes])
         keep_prob = tf.placeholder("float", name='keep_prob')
 
@@ -111,21 +166,23 @@ class RNN:
 
         # Initializing the variables
         init = tf.global_variables_initializer()
-        generator = self.batch_generator()
         with tf.Session() as session:
             saver = tf.train.Saver()
             if self.load:
-                saver.restore(session, self.export_dir + self.model_name)
+                saver.restore(session, self.export_dir + self.load_model_name)
             else:
                 session.run(init)
 
             t0 = time.time()
             for epoch in range(self.hm_epochs):
+                start = epoch * self.batch_size % (
+                    len(y_train) - self.batch_size)
+                batch_x = X_train[start:start + self.batch_size, :, :]
+                batch_y = y_train[start:start + self.batch_size]
 
-                batch_x, batch_y = next(generator)
                 _, c = session.run([optimizer, loss_f],
                                    feed_dict={x: batch_x, y: batch_y,
-                                              keep_prob: 1})
+                                              keep_prob: 0.7})
 
                 if epoch % self.display_step == 0:
                     # Calculate batch accuracy
@@ -137,29 +194,19 @@ class RNN:
                                        feed_dict={x: batch_x, y: batch_y,
                                                   keep_prob: 1})
 
-                    pred = session.run(prediction,
-                                       feed_dict={x: batch_x, y: batch_y,
-                                                  keep_prob: 1})
                     print("Iter " + str(epoch) + " / " + str(
                         self.hm_epochs) + ", Minibatch Loss= " +
                           "{:.6f}".format(loss) + ", Training Accuracy= " +
                           "{:.5f}".format(acc))
 
-                    print(session.run(tf.argmax(prediction, 1),
-                                      feed_dict={x: batch_x, y: batch_y,
-                                                 keep_prob: 1}))
-                    print(session.run(tf.argmax(y, 1),
-                                      feed_dict={x: batch_x, y: batch_y,
-                                                 keep_prob: 1}))
-
-                    # print('Test accuracy: ',
-                    #       round(session.run(accuracy,
-                    #                         feed_dict={x: X_test, y: y_test,
-                    #                                    keep_prob: 1}),
-                    #             3))
                     print('{} epochs time: {}'.format(self.display_step,
                                                       time.time() - t0))
                     t0 = time.time()
+                if epoch % self.test_step == 0:
+                    print('Test accuracy: ',
+                          round(session.run(accuracy,
+                                            feed_dict={x: X_test, y: y_test,
+                                                       keep_prob: 1}), 3))
 
             saver.save(session, self.export_dir + self.model_name)
 
@@ -185,24 +232,17 @@ class RNN:
                 'bias'])
 
     def predict(self):
+        step = 512
+        n_step = self.audio_length * self.sampling_rate // step
         with open('./input/mfcc_test.p', 'rb') as fp:
-            ts_features = pickle.load(fp)
+            X = pickle.load(fp)
 
-        with open('./input/mfcc_labels.p', 'rb') as fp:
-            tr_labels = pickle.load(fp)
-
-        with open('./input/mfcc_test_name.p', 'rb') as fp:
-            fname = pickle.load(fp)
-
-        # Encode string label to int
-        enc = LabelEncoder()
-        tr_labels = enc.fit_transform(tr_labels)
-        self.n_classes = len(enc.classes_)
+        df_mfcc = pd.read_csv(self.import_dir + 'mfcc_test.csv')
 
         # RNN
         tf.reset_default_graph()
 
-        x = tf.placeholder("float", [None, self.n_chunks, self.chunk_size])
+        x = tf.placeholder("float", [None, n_step, self.chunk_size])
         y = tf.placeholder("float", [None, self.n_classes])
         keep_prob = tf.placeholder("float", name='keep_prob')
 
@@ -214,29 +254,29 @@ class RNN:
         with tf.Session() as session:
             saver = tf.train.Saver()
             saver.restore(session, self.export_dir + self.model_name)
-
+            unique = pd.unique(df_mfcc.fname)
             results = {'label': [], 'fname': []}
-            for i, sound in enumerate(ts_features):
-                if len(sound) == 0:
-                    sound = np.zeros((1, self.n_chunks, self.chunk_size))
+            for i in range(len(pd.unique(df_mfcc.fname))):
+                idxs = df_mfcc.fname[
+                    df_mfcc.fname == unique[i]].index.tolist()
+
+                batch = X[idxs, :, :]
+                if batch.sum() == 0:
+                    print('!!!!!!!!!!!!!!!!!')
+                    batch = np.ones_like(batch)
+
                 predictions = session.run(prediction,
-                                          feed_dict={x: np.array(sound),
+                                          feed_dict={x: np.array(batch),
                                                      keep_prob: 1})
+                predictions = predictions.mean(axis=0)
+                top_labels = np.argsort(predictions)
+                top_labels = top_labels[::-1]
 
-                n_classe = 0
-                threshold = 1
-                while n_classe < 3:
-                    top_labels = np.argsort(predictions, axis=1)[:,
-                                 -threshold:].reshape(-1)
-                    labels, counts = np.unique(top_labels, return_counts=True)
-                    n_classe = len(labels)
-                    threshold += 1
-
-                top3_labels = labels[np.argsort(counts)[-3:]]
+                top3_labels = top_labels[:3]
                 top3_labels = " ".join(
-                    [enc.inverse_transform(el) for el in top3_labels])
+                    [self.enc.inverse_transform(el) for el in top3_labels])
                 results['label'].append(top3_labels)
-                results['fname'].append(fname[i])
+                results['fname'].append(unique[i])
 
                 print('Label for {}: {}'.format(i, top3_labels))
 
@@ -264,7 +304,9 @@ class RNN:
 
 if __name__ == '__main__':
     rnn = RNN()
-    rnn.train()
+    # rnn.extract_mfcc(train=False)
+    # rnn.train()
+    rnn.predict()
     # gen = rnn.batch_generator()
     # batch, _ = next(gen)
     # print(batch.shape)
