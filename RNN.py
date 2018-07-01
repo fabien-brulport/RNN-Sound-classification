@@ -14,29 +14,32 @@ import matplotlib.pyplot as plt
 
 class RNN:
     def __init__(self):
+        # Audio parameters
+        self.audio_length = 2
+        self.sampling_rate = 44100
+        step = 512  # numbers of point librosa takes to create 20 features
+        self.time_steps = self.audio_length * self.sampling_rate // step
+
+        # RNN parameters
         self.learning_rate = 0.001
         self.display_step = 50
         self.test_step = 200
-        self.hm_epochs = 1000
+        self.nb_epochs = 16000
         self.n_classes = None
         self.batch_size = 64
-        self.chunk_size = 20
-        # self.n_chunks = 41
+        self.n_features = 20
         self.rnn_sizes = [128, 128]
-        self.audio_length = 2
-        self.sampling_rate = 44100
-        # self.max_length = 50
+        self.model_name = 'mfcc_drop_relabel'
+        self.load_model_name = 'mfcc_drop_relabel'
         self.load = True
+
         self.export_dir = './networks/'
         self.import_dir = './input/'
-        self.model_name = 'mfcc_new_drop'
-        self.load_model_name = 'mfcc_new_drop'
         self.label_file = 'train.csv'
-        self.init_encoders()
+        self._init_encoders()
 
-    def init_encoders(self):
+    def _init_encoders(self):
         df = pd.read_csv(self.import_dir + self.label_file)
-        df = df.set_index('fname')
 
         # Encode string label to int
         self.enc = LabelEncoder()
@@ -48,9 +51,11 @@ class RNN:
         self.enc_hot.fit(self.enc.transform(df.label).reshape(-1, 1))
 
     def extract_mfcc(self, train=True):
-        step = 512
-        n_step = self.audio_length * self.sampling_rate // step
-
+        """
+        Split the audio files in segments of 2 seconds, and compute the mfcc
+        features for all of the
+        :param train: True for train set, False for test set
+        """
         if train:
             df = pd.read_csv(self.import_dir + self.label_file)
             df = df.set_index('fname')
@@ -59,6 +64,7 @@ class RNN:
             path = 'audio_train/'
         else:
             path = 'audio_test/'
+
         mfccs = []
         fnames = []
         count = 0
@@ -73,23 +79,30 @@ class RNN:
 
             try:
                 mfcc = librosa.feature.mfcc(y=sound_clip, sr=s,
-                                            n_mfcc=self.chunk_size).T
+                                            n_mfcc=self.n_features).T
             except ValueError:
-                mfcc = np.ones((10, self.chunk_size))
-                print("!!!!!!!!!!!")
-            time, _ = mfcc.shape
+                # Some files of the test set cause problems
+                mfcc = np.ones((10, self.n_features))
+            time_steps, _ = mfcc.shape
+
             mfcc = scale(mfcc, axis=1)
 
-            pad = n_step - time % n_step
-            if pad < n_step // 3 or time // n_step == 0:
+            pad = self.time_steps - time_steps % self.time_steps
+
+            # pad with zeros to have the same time_steps
+            if pad < self.time_steps // 3 or time_steps // self.time_steps == 0:
                 mfcc = np.pad(mfcc, ((0, pad), (0, 0)), mode='constant',
                               constant_values=(0, 0))
-                mfcc = mfcc.reshape(time // n_step + 1, n_step, self.chunk_size)
+                mfcc = mfcc.reshape(time_steps // self.time_steps + 1,
+                                    self.time_steps, self.n_features)
 
+            # remove the last part if it is too short
             else:
-                mfcc = mfcc[:time // n_step * n_step, :]
-                mfcc = mfcc.reshape(time // n_step, n_step,
-                                    self.chunk_size)
+                mfcc = mfcc[:time_steps // self.time_steps * self.time_steps, :]
+                mfcc = mfcc.reshape(time_steps // self.time_steps,
+                                    self.time_steps,
+                                    self.n_features)
+
             for i in range(mfcc.shape[0]):
                 mfccs.append(mfcc[i, :, :])
                 fnames.append(fname)
@@ -100,11 +113,6 @@ class RNN:
             count += 1
             if count % 100 == 0:
                 print("file {}".format(count))
-                print(len(mfccs))
-                print(len(fnames))
-                if train:
-                    print(len(labels))
-                    print(len(verifieds))
 
         if train:
             df_mfcc = pd.DataFrame({
@@ -123,16 +131,23 @@ class RNN:
             with open('./input/mfcc_test.p', 'wb') as fp:
                 pickle.dump(np.array(mfccs), fp)
 
-    def train(self):
-        step = 512
-        n_step = self.audio_length * self.sampling_rate // step
+    def train(self, verified=False, use_relabel=False):
 
         with open('./input/mfcc_train.p', 'rb') as fp:
             X = pickle.load(fp)
 
-        df_mfcc = pd.read_csv(self.import_dir + 'mfcc_train.csv')
+        if use_relabel:
+            df_mfcc = pd.read_csv(self.import_dir + 'mfcc_train_relabel1.csv')
+        else:
+            df_mfcc = pd.read_csv(self.import_dir + 'mfcc_train.csv')
+        print(len(df_mfcc))
         y = self.enc_hot.transform(
             self.enc.transform(df_mfcc.label).reshape(-1, 1)).toarray()
+        if verified:
+            df_mfcc = df_mfcc[df_mfcc.verified == 1]
+            idx_verif = df_mfcc.index
+            X = X[idx_verif]
+            y = y[idx_verif]
 
         np.random.seed(0)
         idx = np.random.permutation(len(y))
@@ -149,7 +164,7 @@ class RNN:
         # RNN
         tf.reset_default_graph()
 
-        x = tf.placeholder("float", [None, n_step, self.chunk_size])
+        x = tf.placeholder("float", [None, self.time_steps, self.n_features])
         y = tf.placeholder("float", [None, self.n_classes])
         keep_prob = tf.placeholder("float", name='keep_prob')
 
@@ -174,7 +189,7 @@ class RNN:
                 session.run(init)
 
             t0 = time.time()
-            for epoch in range(self.hm_epochs):
+            for epoch in range(self.nb_epochs):
                 start = epoch * self.batch_size % (
                     len(y_train) - self.batch_size)
                 batch_x = X_train[start:start + self.batch_size, :, :]
@@ -195,7 +210,7 @@ class RNN:
                                                   keep_prob: 1})
 
                     print("Iter " + str(epoch) + " / " + str(
-                        self.hm_epochs) + ", Minibatch Loss= " +
+                        self.nb_epochs) + ", Minibatch Loss= " +
                           "{:.6f}".format(loss) + ", Training Accuracy= " +
                           "{:.5f}".format(acc))
 
@@ -232,8 +247,6 @@ class RNN:
                 'bias'])
 
     def predict(self):
-        step = 512
-        n_step = self.audio_length * self.sampling_rate // step
         with open('./input/mfcc_test.p', 'rb') as fp:
             X = pickle.load(fp)
 
@@ -242,15 +255,12 @@ class RNN:
         # RNN
         tf.reset_default_graph()
 
-        x = tf.placeholder("float", [None, n_step, self.chunk_size])
-        y = tf.placeholder("float", [None, self.n_classes])
+        x = tf.placeholder("float", [None, self.time_steps, self.n_features])
         keep_prob = tf.placeholder("float", name='keep_prob')
 
         prediction = self.build_rnn(x, keep_prob)
-        pred = tf.argmax(prediction, 1)
 
         # Initializing the variables
-        init = tf.global_variables_initializer()
         with tf.Session() as session:
             saver = tf.train.Saver()
             saver.restore(session, self.export_dir + self.model_name)
@@ -268,6 +278,7 @@ class RNN:
                 predictions = session.run(prediction,
                                           feed_dict={x: np.array(batch),
                                                      keep_prob: 1})
+                # todo geometric
                 predictions = predictions.mean(axis=0)
                 top_labels = np.argsort(predictions)
                 top_labels = top_labels[::-1]
@@ -293,6 +304,11 @@ class RNN:
 
     @staticmethod
     def last_relevant(output, length):
+        """
+        Return the last relevant output of the LSTM cell, by removing the
+        trailing zeros (!! Raise an error it the array is full of zeros)
+        From https://danijar.com/variable-sequence-lengths-in-tensorflow/
+        """
         batch_size = tf.shape(output)[0]
         max_length = tf.shape(output)[1]
         out_size = int(output.get_shape()[2])
@@ -301,16 +317,84 @@ class RNN:
         relevant = tf.gather(flat, index)
         return relevant
 
+    def relabel(self):
+        with open('./input/mfcc_train.p', 'rb') as fp:
+            X = pickle.load(fp)
+
+        df_mfcc = pd.read_csv(self.import_dir + 'mfcc_train.csv')
+        old_label = self.enc.transform(df_mfcc.label)
+
+        # Remove verified label
+        df_mfcc = df_mfcc[df_mfcc.verified == 0]
+
+        # RNN
+        tf.reset_default_graph()
+        x = tf.placeholder("float", [None, self.time_steps, self.n_features])
+        keep_prob = tf.placeholder("float", name='keep_prob')
+
+        prediction = self.build_rnn(x, keep_prob)
+        new_label = []
+        new_prob = []
+        new_ratio = []
+        new_pos = []
+        fname = []
+
+        with tf.Session() as session:
+            saver = tf.train.Saver()
+            saver.restore(session, self.export_dir + self.model_name)
+            unique = pd.unique(df_mfcc.fname)
+            for i in range(len(pd.unique(df_mfcc.fname))):
+                idxs = df_mfcc.fname[
+                    df_mfcc.fname == unique[i]].index.tolist()
+
+                batch = X[idxs, :, :]
+                if batch.sum() == 0:
+                    print('!!!!!!!!!!!!!!!!!')
+                    batch = np.ones_like(batch)
+
+                predictions = session.run(prediction,
+                                          feed_dict={x: np.array(batch),
+                                                     keep_prob: 1})
+                # predictions = np.power(predictions.prod(axis=0),
+                #                        1 / self.n_classes)
+                predictions = np.mean(predictions, axis=0)
+                top_predictions = np.sort(predictions)
+                top_predictions = top_predictions[::-1]
+                top_labels = np.argsort(predictions)
+                top_labels = top_labels[::-1]
+                if old_label[idxs[0]] != top_labels[0]:
+                    for _ in range(len(idxs)):
+                        new_label.append(
+                            self.enc.inverse_transform(top_labels[0]))
+                        new_prob.append(top_predictions[0])
+                        new_ratio.append(
+                            top_predictions[0] / top_predictions[1])
+                        new_pos.append(
+                            top_labels.tolist().index(old_label[idxs[0]]))
+
+                    print("file {}/{}".format(i, len(unique)))
+                    print("New index {} with prob {}, ratio {}, ".format(
+                        new_label[-1], new_prob[-1], new_ratio[-1]))
+                    print("Position of old label: {}".format(new_pos[-1]))
+                else:
+                    for _ in range(len(idxs)):
+                        new_label.append(np.nan)
+                        new_prob.append(np.nan)
+                        new_ratio.append(np.nan)
+                        new_pos.append(np.nan)
+
+        df_mfcc['new_label'] = new_label
+        df_mfcc['new_prob'] = new_prob
+        df_mfcc['new_ratio'] = new_ratio
+        df_mfcc['new_pos'] = new_pos
+        print(df_mfcc.head())
+        df_mfcc.to_csv("input/first_relabel.csv", index=False)
+
 
 if __name__ == '__main__':
     rnn = RNN()
     # rnn.extract_mfcc(train=False)
-    # rnn.train()
+    # rnn.train(verified=False, use_relabel=True)
     rnn.predict()
-    # gen = rnn.batch_generator()
-    # batch, _ = next(gen)
-    # print(batch.shape)
-    # for i in batch:
-    #     plt.plot(i[:,0])
-    #     plt.plot(i[:,1])
-    #     plt.show()
+    # rnn.relabel()
+
