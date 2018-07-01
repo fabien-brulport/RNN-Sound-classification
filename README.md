@@ -1,10 +1,10 @@
 # Sound classification using Recurrent Neural Networks
 This repository is a RNN implementation using Tensorflow, to classify audio clips of different lengths.
-The input of the neural networks is not the raw sound, but the [MFCC](https://en.wikipedia.org/wiki/Mel-frequency_cepstrum) features (20 features for 512 time steps).
+The input of the neural networks is not the raw sound, but the [MFCC](https://en.wikipedia.org/wiki/Mel-frequency_cepstrum) features (20 features).
 
 <p align="center">
-    <img src="gallery/sound.png" width = "200" align="middle">
-    <img src="gallery/mfcc.png" width = "200" align="middle">
+    <img src="gallery/sound.png" width = "600" align="middle">
+    <img src="gallery/mfcc.png" width = "600" align="middle">
 </p>
 
 
