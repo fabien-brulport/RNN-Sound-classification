@@ -5,11 +5,9 @@ from sklearn.preprocessing import OneHotEncoder, LabelEncoder, scale
 import numpy as np
 import time
 import pandas as pd
-import random
 import os
 import glob
 import librosa
-import matplotlib.pyplot as plt
 
 
 class RNN:
@@ -85,7 +83,7 @@ class RNN:
                 mfcc = np.ones((10, self.n_features))
             time_steps, _ = mfcc.shape
 
-            mfcc = scale(mfcc, axis=1)
+            mfcc = scale(mfcc, axis=0)
 
             pad = self.time_steps - time_steps % self.time_steps
 
@@ -393,8 +391,8 @@ class RNN:
 
 if __name__ == '__main__':
     rnn = RNN()
-    # rnn.extract_mfcc(train=False)
+    rnn.extract_mfcc(train=True)
     # rnn.train(verified=False, use_relabel=True)
-    rnn.predict()
+    # rnn.predict()
     # rnn.relabel()
 
