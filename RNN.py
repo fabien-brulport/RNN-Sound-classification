@@ -22,13 +22,13 @@ class RNN:
         self.learning_rate = 0.001
         self.display_step = 50
         self.test_step = 200
-        self.nb_epochs = 16000
+        self.nb_epochs = 4000
         self.n_classes = None
         self.batch_size = 64
         self.n_features = 20
         self.rnn_sizes = [128, 128]
-        self.model_name = 'mfcc_drop_relabel'
-        self.load_model_name = 'mfcc_drop_relabel'
+        self.model_name = 'mfcc_drop_scaled'
+        self.load_model_name = 'mfcc_drop_verified'
         self.load = True
 
         self.export_dir = './networks/'
@@ -130,6 +130,9 @@ class RNN:
                 pickle.dump(np.array(mfccs), fp)
 
     def train(self, verified=False, use_relabel=False):
+        """
+        Train on the mfcc features
+        """
 
         with open('./input/mfcc_train.p', 'rb') as fp:
             X = pickle.load(fp)
@@ -138,9 +141,11 @@ class RNN:
             df_mfcc = pd.read_csv(self.import_dir + 'mfcc_train_relabel1.csv')
         else:
             df_mfcc = pd.read_csv(self.import_dir + 'mfcc_train.csv')
-        print(len(df_mfcc))
+
         y = self.enc_hot.transform(
             self.enc.transform(df_mfcc.label).reshape(-1, 1)).toarray()
+
+        # take only the manually verified label
         if verified:
             df_mfcc = df_mfcc[df_mfcc.verified == 1]
             idx_verif = df_mfcc.index
@@ -224,6 +229,9 @@ class RNN:
             saver.save(session, self.export_dir + self.model_name)
 
     def build_rnn(self, x, keep_prob):
+        """
+        Build the network
+        """
         layer = {
             'weight': tf.Variable(
                 tf.truncated_normal([self.rnn_sizes[-1], self.n_classes],
@@ -243,55 +251,6 @@ class RNN:
         return tf.nn.softmax(
             tf.tensordot(last, layer['weight'], [[1], [0]]) + layer[
                 'bias'])
-
-    def predict(self):
-        with open('./input/mfcc_test.p', 'rb') as fp:
-            X = pickle.load(fp)
-
-        df_mfcc = pd.read_csv(self.import_dir + 'mfcc_test.csv')
-
-        # RNN
-        tf.reset_default_graph()
-
-        x = tf.placeholder("float", [None, self.time_steps, self.n_features])
-        keep_prob = tf.placeholder("float", name='keep_prob')
-
-        prediction = self.build_rnn(x, keep_prob)
-
-        # Initializing the variables
-        with tf.Session() as session:
-            saver = tf.train.Saver()
-            saver.restore(session, self.export_dir + self.model_name)
-            unique = pd.unique(df_mfcc.fname)
-            results = {'label': [], 'fname': []}
-            for i in range(len(pd.unique(df_mfcc.fname))):
-                idxs = df_mfcc.fname[
-                    df_mfcc.fname == unique[i]].index.tolist()
-
-                batch = X[idxs, :, :]
-                if batch.sum() == 0:
-                    print('!!!!!!!!!!!!!!!!!')
-                    batch = np.ones_like(batch)
-
-                predictions = session.run(prediction,
-                                          feed_dict={x: np.array(batch),
-                                                     keep_prob: 1})
-                # todo geometric
-                predictions = predictions.mean(axis=0)
-                top_labels = np.argsort(predictions)
-                top_labels = top_labels[::-1]
-
-                top3_labels = top_labels[:3]
-                top3_labels = " ".join(
-                    [self.enc.inverse_transform(el) for el in top3_labels])
-                results['label'].append(top3_labels)
-                results['fname'].append(unique[i])
-
-                print('Label for {}: {}'.format(i, top3_labels))
-
-        df = pd.DataFrame(results)
-        print(df.head())
-        df.to_csv("output/{}.csv".format(self.model_name), index=False)
 
     @staticmethod
     def length(sequence):
@@ -314,6 +273,58 @@ class RNN:
         flat = tf.reshape(output, [-1, out_size])
         relevant = tf.gather(flat, index)
         return relevant
+
+    def predict(self):
+        with open('./input/mfcc_test.p', 'rb') as fp:
+            X = pickle.load(fp)
+
+        df_mfcc = pd.read_csv(self.import_dir + 'mfcc_test.csv')
+
+        # RNN
+        tf.reset_default_graph()
+
+        # variables
+        x = tf.placeholder("float", [None, self.time_steps, self.n_features])
+        keep_prob = tf.placeholder("float", name='keep_prob')
+
+        prediction = self.build_rnn(x, keep_prob)
+
+        with tf.Session() as session:
+            saver = tf.train.Saver()
+            saver.restore(session, self.export_dir + self.model_name)
+            unique = pd.unique(df_mfcc.fname)
+            results = {'label': [], 'fname': []}
+            for i in range(len(pd.unique(df_mfcc.fname))):
+                idxs = df_mfcc.fname[
+                    df_mfcc.fname == unique[i]].index.tolist()
+
+                batch = X[idxs, :, :]
+                if batch.sum() == 0:
+                    batch = np.ones_like(batch)
+
+                predictions = session.run(prediction,
+                                          feed_dict={x: np.array(batch),
+                                                     keep_prob: 1})
+                predictions = predictions.mean(axis=0)
+                top3_labels = self.top_3(predictions, return_string=True)
+                results['label'].append(top3_labels)
+                results['fname'].append(unique[i])
+
+                print('Label for {}: {}'.format(i, top3_labels))
+
+        df = pd.DataFrame(results)
+        print(df.head())
+        df.to_csv("output/{}.csv".format(self.model_name), index=False)
+
+    def top_3(self, predictions, return_string=True):
+        top_labels = np.argsort(predictions)
+        top_labels = top_labels[::-1]
+        top3_labels = top_labels[:3]
+
+        if return_string:
+            top3_labels = " ".join(
+                [self.enc.inverse_transform(el) for el in top3_labels])
+        return top3_labels
 
     def relabel(self):
         with open('./input/mfcc_train.p', 'rb') as fp:
@@ -391,8 +402,7 @@ class RNN:
 
 if __name__ == '__main__':
     rnn = RNN()
-    rnn.extract_mfcc(train=True)
-    # rnn.train(verified=False, use_relabel=True)
-    # rnn.predict()
-    # rnn.relabel()
-
+    rnn.extract_mfcc(train=False)
+    rnn.train(verified=False, use_relabel=False)
+    rnn.extract_mfcc(train=False)
+    rnn.predict()
