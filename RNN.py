@@ -23,7 +23,6 @@ class RNN:
         self.display_step = 50
         self.test_step = 200
         self.nb_epochs = 4000
-        self.n_classes = None
         self.batch_size = 64
         self.n_features = 20
         self.rnn_sizes = [128, 128]
@@ -129,7 +128,7 @@ class RNN:
             with open('./input/mfcc_test.p', 'wb') as fp:
                 pickle.dump(np.array(mfccs), fp)
 
-    def train(self, verified=False, use_relabel=False):
+    def train(self, verified=False):
         """
         Train on the mfcc features
         """
@@ -137,10 +136,7 @@ class RNN:
         with open('./input/mfcc_train.p', 'rb') as fp:
             X = pickle.load(fp)
 
-        if use_relabel:
-            df_mfcc = pd.read_csv(self.import_dir + 'mfcc_train_relabel1.csv')
-        else:
-            df_mfcc = pd.read_csv(self.import_dir + 'mfcc_train.csv')
+        df_mfcc = pd.read_csv(self.import_dir + 'mfcc_train.csv')
 
         y = self.enc_hot.transform(
             self.enc.transform(df_mfcc.label).reshape(-1, 1)).toarray()
@@ -254,6 +250,9 @@ class RNN:
 
     @staticmethod
     def length(sequence):
+        """
+        From https://danijar.com/variable-sequence-lengths-in-tensorflow/
+        """
         used = tf.sign(tf.reduce_max(tf.abs(sequence), 2))
         length = tf.reduce_sum(used, 1)
         length = tf.cast(length, tf.int32)
@@ -326,83 +325,10 @@ class RNN:
                 [self.enc.inverse_transform(el) for el in top3_labels])
         return top3_labels
 
-    def relabel(self):
-        with open('./input/mfcc_train.p', 'rb') as fp:
-            X = pickle.load(fp)
-
-        df_mfcc = pd.read_csv(self.import_dir + 'mfcc_train.csv')
-        old_label = self.enc.transform(df_mfcc.label)
-
-        # Remove verified label
-        df_mfcc = df_mfcc[df_mfcc.verified == 0]
-
-        # RNN
-        tf.reset_default_graph()
-        x = tf.placeholder("float", [None, self.time_steps, self.n_features])
-        keep_prob = tf.placeholder("float", name='keep_prob')
-
-        prediction = self.build_rnn(x, keep_prob)
-        new_label = []
-        new_prob = []
-        new_ratio = []
-        new_pos = []
-        fname = []
-
-        with tf.Session() as session:
-            saver = tf.train.Saver()
-            saver.restore(session, self.export_dir + self.model_name)
-            unique = pd.unique(df_mfcc.fname)
-            for i in range(len(pd.unique(df_mfcc.fname))):
-                idxs = df_mfcc.fname[
-                    df_mfcc.fname == unique[i]].index.tolist()
-
-                batch = X[idxs, :, :]
-                if batch.sum() == 0:
-                    print('!!!!!!!!!!!!!!!!!')
-                    batch = np.ones_like(batch)
-
-                predictions = session.run(prediction,
-                                          feed_dict={x: np.array(batch),
-                                                     keep_prob: 1})
-                # predictions = np.power(predictions.prod(axis=0),
-                #                        1 / self.n_classes)
-                predictions = np.mean(predictions, axis=0)
-                top_predictions = np.sort(predictions)
-                top_predictions = top_predictions[::-1]
-                top_labels = np.argsort(predictions)
-                top_labels = top_labels[::-1]
-                if old_label[idxs[0]] != top_labels[0]:
-                    for _ in range(len(idxs)):
-                        new_label.append(
-                            self.enc.inverse_transform(top_labels[0]))
-                        new_prob.append(top_predictions[0])
-                        new_ratio.append(
-                            top_predictions[0] / top_predictions[1])
-                        new_pos.append(
-                            top_labels.tolist().index(old_label[idxs[0]]))
-
-                    print("file {}/{}".format(i, len(unique)))
-                    print("New index {} with prob {}, ratio {}, ".format(
-                        new_label[-1], new_prob[-1], new_ratio[-1]))
-                    print("Position of old label: {}".format(new_pos[-1]))
-                else:
-                    for _ in range(len(idxs)):
-                        new_label.append(np.nan)
-                        new_prob.append(np.nan)
-                        new_ratio.append(np.nan)
-                        new_pos.append(np.nan)
-
-        df_mfcc['new_label'] = new_label
-        df_mfcc['new_prob'] = new_prob
-        df_mfcc['new_ratio'] = new_ratio
-        df_mfcc['new_pos'] = new_pos
-        print(df_mfcc.head())
-        df_mfcc.to_csv("input/first_relabel.csv", index=False)
-
 
 if __name__ == '__main__':
     rnn = RNN()
-    rnn.extract_mfcc(train=False)
-    rnn.train(verified=False, use_relabel=False)
+    rnn.extract_mfcc(train=True)
+    rnn.train(verified=False)
     rnn.extract_mfcc(train=False)
     rnn.predict()
