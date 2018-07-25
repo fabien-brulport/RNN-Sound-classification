@@ -2,6 +2,7 @@ import tensorflow as tf
 from tensorflow.python.ops import rnn, rnn_cell
 import pickle
 from sklearn.preprocessing import OneHotEncoder, LabelEncoder, scale
+from sklearn.model_selection import KFold
 import numpy as np
 import time
 import pandas as pd
@@ -21,15 +22,15 @@ class RNN:
         # RNN parameters
         self.learning_rate = 0.001
         self.display_step = 50
-        self.test_step = 200
-        self.nb_epochs = 4000
+        self.test_step = 50
+        self.nb_epochs = 100
         self.n_classes = None
         self.batch_size = 64
         self.n_features = 20
         self.rnn_sizes = [128, 128]
-        self.model_name = 'mfcc_drop_scaled'
-        self.load_model_name = 'mfcc_drop_verified'
-        self.load = True
+        self.model_name = 'mfcc_test'
+        self.load_model_name = 'mfcc_test'
+        self.load = False
 
         self.export_dir = './networks/'
         self.import_dir = './input/'
@@ -142,7 +143,7 @@ class RNN:
         else:
             df_mfcc = pd.read_csv(self.import_dir + 'mfcc_train.csv')
 
-        y = self.enc_hot.transform(
+        label = self.enc_hot.transform(
             self.enc.transform(df_mfcc.label).reshape(-1, 1)).toarray()
 
         # take only the manually verified label
@@ -150,83 +151,71 @@ class RNN:
             df_mfcc = df_mfcc[df_mfcc.verified == 1]
             idx_verif = df_mfcc.index
             X = X[idx_verif]
-            y = y[idx_verif]
+            y = label[idx_verif]
 
-        np.random.seed(0)
-        idx = np.random.permutation(len(y))
-        X = X[idx, :, :]
-        y = y[idx]
+        kf = KFold(n_splits=5, shuffle=True)
+        for i, index in enumerate(kf.split(X)):
+            train_index, test_index = index
 
-        sep = int(len(y) * 0.9)
-        X_train = X[:sep, :, :]
-        X_test = X[sep:, :, :]
+            X_train = X[train_index, :, :]
+            X_test = X[test_index, :, :]
 
-        y_train = y[:sep]
-        y_test = y[sep:]
+            y_train = label[train_index]
+            y_test = label[test_index]
 
-        # RNN
-        tf.reset_default_graph()
+            # RNN
+            tf.reset_default_graph()
 
-        x = tf.placeholder("float", [None, self.time_steps, self.n_features])
-        y = tf.placeholder("float", [None, self.n_classes])
-        keep_prob = tf.placeholder("float", name='keep_prob')
+            x = tf.placeholder("float", [None, self.time_steps, self.n_features])
+            y = tf.placeholder("float", [None, self.n_classes])
+            keep_prob = tf.placeholder("float", name='keep_prob')
 
-        prediction = self.build_rnn(x, keep_prob)
+            prediction = self.build_rnn(x, keep_prob)
 
-        # Define loss and optimizer
-        loss_f = -tf.reduce_sum(y * tf.log(prediction + 1e-10))
-        optimizer = tf.train.RMSPropOptimizer(
-            learning_rate=self.learning_rate).minimize(loss_f)
+            # Define loss and optimizer
+            loss_f = -tf.reduce_sum(y * tf.log(prediction + 1e-10))
+            optimizer = tf.train.RMSPropOptimizer(
+                learning_rate=self.learning_rate).minimize(loss_f)
 
-        # Evaluate model
-        correct_pred = tf.equal(tf.argmax(prediction, 1), tf.argmax(y, 1))
-        accuracy = tf.reduce_mean(tf.cast(correct_pred, tf.float32))
+            # Evaluate model
+            correct_pred = tf.equal(tf.argmax(prediction, 1), tf.argmax(y, 1))
+            accuracy = tf.reduce_mean(tf.cast(correct_pred, tf.float32))
 
-        # Initializing the variables
-        init = tf.global_variables_initializer()
-        with tf.Session() as session:
-            saver = tf.train.Saver()
-            if self.load:
-                saver.restore(session, self.export_dir + self.load_model_name)
-            else:
-                session.run(init)
+            # Initializing the variables
+            init = tf.global_variables_initializer()
+            with tf.Session() as session:
+                saver = tf.train.Saver()
+                if self.load:
+                    saver.restore(session, self.export_dir + self.load_model_name + '{}'.format(i))
+                else:
+                    session.run(init)
 
-            t0 = time.time()
-            for epoch in range(self.nb_epochs):
-                start = epoch * self.batch_size % (
-                    len(y_train) - self.batch_size)
-                batch_x = X_train[start:start + self.batch_size, :, :]
-                batch_y = y_train[start:start + self.batch_size]
+                t0 = time.time()
+                for epoch in range(self.nb_epochs):
+                    start = epoch * self.batch_size % (len(y_train) - self.batch_size)
+                    batch_x = X_train[start:start + self.batch_size, :, :]
+                    batch_y = y_train[start:start + self.batch_size]
 
-                _, c = session.run([optimizer, loss_f],
-                                   feed_dict={x: batch_x, y: batch_y,
-                                              keep_prob: 0.7})
+                    _, c = session.run([optimizer, loss_f], feed_dict={x: batch_x, y: batch_y, keep_prob: 0.7})
 
-                if epoch % self.display_step == 0:
-                    # Calculate batch accuracy
-                    acc = session.run(accuracy,
-                                      feed_dict={x: batch_x, y: batch_y,
-                                                 keep_prob: 1})
-                    # Calculate batch loss
-                    loss = session.run(loss_f,
-                                       feed_dict={x: batch_x, y: batch_y,
-                                                  keep_prob: 1})
+                    if epoch % self.display_step == 0:
+                        # Calculate batch accuracy
+                        acc = session.run(accuracy, feed_dict={x: batch_x, y: batch_y, keep_prob: 1})
+                        # Calculate batch loss
+                        loss = session.run(loss_f, feed_dict={x: batch_x, y: batch_y, keep_prob: 1})
 
-                    print("Iter " + str(epoch) + " / " + str(
-                        self.nb_epochs) + ", Minibatch Loss= " +
-                          "{:.6f}".format(loss) + ", Training Accuracy= " +
-                          "{:.5f}".format(acc))
+                        print("Fold " + str(i) + ", Iter " + str(epoch) + " / " + str(
+                            self.nb_epochs) + ", Minibatch Loss= " +
+                              "{:.6f}".format(loss) + ", Training Accuracy= " +
+                              "{:.5f}".format(acc))
 
-                    print('{} epochs time: {}'.format(self.display_step,
-                                                      time.time() - t0))
-                    t0 = time.time()
-                if epoch % self.test_step == 0:
-                    print('Test accuracy: ',
-                          round(session.run(accuracy,
-                                            feed_dict={x: X_test, y: y_test,
-                                                       keep_prob: 1}), 3))
+                        print('{} epochs time: {}'.format(self.display_step, time.time() - t0))
+                        t0 = time.time()
+                    if epoch % self.test_step == 0:
+                        print('Test accuracy: ',
+                              round(session.run(accuracy, feed_dict={x: X_test, y: y_test, keep_prob: 1}), 3))
 
-            saver.save(session, self.export_dir + self.model_name)
+                saver.save(session, self.export_dir + self.model_name + '{}'.format(i))
 
     def build_rnn(self, x, keep_prob):
         """
@@ -402,7 +391,7 @@ class RNN:
 
 if __name__ == '__main__':
     rnn = RNN()
-    rnn.extract_mfcc(train=False)
+    # rnn.extract_mfcc(train=False)
     rnn.train(verified=False, use_relabel=False)
-    rnn.extract_mfcc(train=False)
-    rnn.predict()
+    # rnn.extract_mfcc(train=False)
+    # rnn.predict()
