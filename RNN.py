@@ -23,13 +23,13 @@ class RNN:
         self.learning_rate = 0.001
         self.display_step = 50
         self.test_step = 200
-        self.nb_epochs = 4000
+        self.nb_epochs = 2000
         self.batch_size = 64
         self.n_features = 20
         self.rnn_sizes = [128, 128]
-        self.model_name = 'mfcc_test'
-        self.load_model_name = 'mfcc_test'
-        self.load = False
+        self.model_name = 'mfcc_cross'
+        self.load_model_name = 'mfcc_cross'
+        self.load = True
 
         self.export_dir = './networks/'
         self.import_dir = './input/'
@@ -267,38 +267,43 @@ class RNN:
             X = pickle.load(fp)
 
         df_mfcc = pd.read_csv(self.import_dir + 'mfcc_test.csv')
+        predictions = np.zeros((5, len(pd.unique(df_mfcc.fname)), self.n_classes))
+        for j in range(5):
 
-        # RNN
-        tf.reset_default_graph()
+            # RNN
+            tf.reset_default_graph()
 
-        # variables
-        x = tf.placeholder("float", [None, self.time_steps, self.n_features])
-        keep_prob = tf.placeholder("float", name='keep_prob')
+            # variables
+            x = tf.placeholder("float", [None, self.time_steps, self.n_features])
+            keep_prob = tf.placeholder("float", name='keep_prob')
 
-        prediction = self.build_rnn(x, keep_prob)
+            prediction = self.build_rnn(x, keep_prob)
 
-        with tf.Session() as session:
-            saver = tf.train.Saver()
-            saver.restore(session, self.export_dir + self.model_name)
-            unique = pd.unique(df_mfcc.fname)
-            results = {'label': [], 'fname': []}
-            for i in range(len(pd.unique(df_mfcc.fname))):
-                idxs = df_mfcc.fname[
-                    df_mfcc.fname == unique[i]].index.tolist()
+            with tf.Session() as session:
+                saver = tf.train.Saver()
+                saver.restore(session, self.export_dir + self.model_name + '{}'.format(j))
+                unique = pd.unique(df_mfcc.fname)
+                for i in range(len(pd.unique(df_mfcc.fname))):
+                    idxs = df_mfcc.fname[df_mfcc.fname == unique[i]].index.tolist()
 
-                batch = X[idxs, :, :]
-                if batch.sum() == 0:
-                    batch = np.ones_like(batch)
+                    batch = X[idxs, :, :]
+                    if batch.sum() == 0:
+                        batch = np.ones_like(batch)
 
-                predictions = session.run(prediction,
-                                          feed_dict={x: np.array(batch),
-                                                     keep_prob: 1})
-                predictions = predictions.mean(axis=0)
-                top3_labels = self.top_3(predictions, return_string=True)
-                results['label'].append(top3_labels)
-                results['fname'].append(unique[i])
+                    pred = session.run(prediction, feed_dict={x: np.array(batch), keep_prob: 1})
+                    # Average on the segment for the same audio
+                    predictions[j, i, :] = pred.mean(axis=0)
+            print("Network {} done ! ".format(j))
+        unique = pd.unique(df_mfcc.fname)
+        results = {'label': [], 'fname': []}
+        # Average on the 5 networks
+        predictions = predictions.mean(axis=0)
+        for i in range(len(pd.unique(df_mfcc.fname))):
+            top3_labels = self.top_3(predictions[i, :], return_string=True)
+            results['label'].append(top3_labels)
+            results['fname'].append(unique[i])
 
-                print('Label for {}: {}'.format(i, top3_labels))
+            print('Label for {}: {}'.format(i, top3_labels))
 
         df = pd.DataFrame(results)
         print(df.head())
@@ -310,14 +315,13 @@ class RNN:
         top3_labels = top_labels[:3]
 
         if return_string:
-            top3_labels = " ".join(
-                [self.enc.inverse_transform(el) for el in top3_labels])
+            top3_labels = " ".join([self.enc.inverse_transform(el) for el in top3_labels])
         return top3_labels
 
 
 if __name__ == '__main__':
     rnn = RNN()
     # rnn.extract_mfcc(train=False)
-    rnn.train(verified=False)
+    # rnn.train(verified=False)
     # rnn.extract_mfcc(train=False)
-    # rnn.predict()
+    rnn.predict()
