@@ -18,5 +18,5 @@ Since one file can be composed of several sequences, the results of sequences co
 I used this network to classify sounds for my first [kaggle competition](https://www.kaggle.com/c/freesound-audio-tagging), but I still need to dig into the data to improve the result.
 
 ## Sources
-* this [repository](https://github.com/aqibsaeed/Urban-Sound-Classification/blob/master/Urban%20Sound%20Classification%20using%20RNN.ipynb) and this [notebook](https://musicinformationretrieval.com/mfcc.html) helped me to understand the mfcc features extraction.
+* this [repository](https://github.com/aqibsaeed/Urban-Sound-Classification/blob/master/Recurrent%20Neural%20Network.ipynb) and this [notebook](https://musicinformationretrieval.com/mfcc.html) helped me to understand the mfcc features extraction.
 * this [post](https://danijar.com/variable-sequence-lengths-in-tensorflow/) explains how to take into account the variable length of the sequences.
